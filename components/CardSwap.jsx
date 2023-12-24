@@ -13,15 +13,13 @@ import {
   Tab,
 } from "@nextui-org/react";
 
-import { useAddRecentTransaction } from "@rainbow-me/rainbowkit";
-
 import toast, { Toaster } from "react-hot-toast";
 import { Input } from "@nextui-org/react";
 import { Select, SelectItem } from "@nextui-org/react";
 import { isAddress, formatUnits, pad, parseUnits } from "viem";
 import { ChainSelect } from "@/const/ChainSelect";
 import { useNetwork, useAccount, readContracts } from "wagmi";
-import { writeContract } from "@wagmi/core";
+import { writeContract, waitForTransaction } from "@wagmi/core";
 import { useState, useEffect } from "react";
 import { OFTV2_ABI } from "@/const/ABI/OFT";
 
@@ -37,10 +35,21 @@ export default function CardSwap() {
   const [errorToken, setErrorToken] = useState(false);
   const [selector, setSelector] = useState(ChainSelect);
   const [fee, setFee] = useState("0");
+  const [totalGas, setTotalGas] = useState();
   const [tokenMetadata, settokenMetadata] = useState({
     balance: "0",
     decimal: 18,
     name: "",
+  });
+
+  const [errorTx, seterrorTx] = useState({
+    status: false,
+    text: "",
+  });
+  const [successTx, setsuccessTx] = useState({
+    status: false,
+    text: "",
+    hash: "",
   });
 
   function HandleChangeContractAddress(event) {
@@ -153,8 +162,8 @@ export default function CardSwap() {
   function HandleChangeExtraGas(event) {
     const extraGas = event.target.value;
     let gasWithExtra = BigInt(fee) + (BigInt(fee) * BigInt(extraGas)) / 100n;
-    setFee(gasWithExtra);
     setextraGas(extraGas);
+    setTotalGas(gasWithExtra);
   }
 
   Array.prototype.remove = function (key, value) {
@@ -174,36 +183,114 @@ export default function CardSwap() {
     (async () => {
       await fetchTokenMetaData(contractAddress);
       await quoteLayerzeroFee(destChain);
+
+      setsuccessTx({
+        status: false,
+        text: "",
+        hash: "",
+      });
+
+      seterrorTx({
+        status: false,
+        text: "",
+      });
     })();
   }, [amount, chain, destChain, contractAddress, extraGas]);
 
   async function handleBridge() {
-    try {
-      const { hash } = await writeContract({
-        address: contractAddress,
-        abi: OFTV2_ABI,
-        functionName: "sendFrom",
-        value: fee,
-        args: [
-          address,
-          destChain,
-          pad(address, 32),
-          parseUnits(amount, tokenMetadata.decimal),
-          [
+    setsuccessTx({
+      status: false,
+      text: "",
+      hash: "",
+    });
+
+    seterrorTx({
+      status: false,
+      text: "",
+    });
+    if (chain.name == "Canto" || chain.name == "Polygon") {
+      try {
+        const { hash } = await writeContract({
+          address: contractAddress,
+          abi: OFTV2_ABI,
+          functionName: "sendFrom",
+          value: totalGas,
+          gas: 1500000n,
+          args: [
             address,
-            "0x0000000000000000000000000000000000000000",
-            "0x00010000000000000000000000000000000000000000000000000000000000030d40",
+            destChain,
+            pad(address, 32),
+            parseUnits(amount, tokenMetadata.decimal),
+            [
+              address,
+              "0x0000000000000000000000000000000000000000",
+              "0x00010000000000000000000000000000000000000000000000000000000000030d40",
+            ],
           ],
-        ],
-      });
-      useAddRecentTransaction(hash);
-      console.log(hash);
-    } catch (err) {
-      console.log(err);
-      if (err.details) {
-        toast.error(err.details);
-      } else {
-        toast.error(err);
+        });
+
+        if (hash) {
+          setsuccessTx({
+            status: true,
+            text: "Sucess Sending OFT to Layerzero",
+            hash: hash,
+          });
+        }
+      } catch (err) {
+        console.log(err);
+        if (err.details) {
+          seterrorTx({
+            status: true,
+            text: err.details,
+          });
+        } else {
+          seterrorTx({
+            status: true,
+            text: err.name,
+          });
+        }
+      }
+    } else {
+      try {
+        const { hash } = await writeContract({
+          address: contractAddress,
+          abi: OFTV2_ABI,
+          functionName: "sendFrom",
+          value: totalGas,
+          args: [
+            address,
+            destChain,
+            pad(address, 32),
+            parseUnits(amount, tokenMetadata.decimal),
+            [
+              address,
+              "0x0000000000000000000000000000000000000000",
+              "0x00010000000000000000000000000000000000000000000000000000000000030d40",
+            ],
+          ],
+        });
+
+        if (hash) {
+          setsuccessTx({
+            status: true,
+            text: "Sucess Sending OFT to Layerzero",
+            hash: hash,
+          });
+        }
+      } catch (err) {
+        console.log(err);
+        if (err.details) {
+          toast.error(<span>{err.details}</span>);
+          seterrorTx({
+            status: true,
+            text: err.details,
+          });
+        } else {
+          seterrorTx({
+            status: true,
+            text: err.name,
+          });
+        }
       }
     }
   }
@@ -315,7 +402,10 @@ export default function CardSwap() {
         <div className="flex gap-4 mb-3">
           {fee !== undefined && fee > 0 ? (
             <Chip radius="sm" color="warning">
-              LayerZero Fee : {Number(formatUnits(fee, 18)).toFixed(5)}{" "}
+              LayerZero Fee :{" "}
+              {totalGas > 0
+                ? Number(formatUnits(totalGas, 18)).toFixed(5)
+                : Number(formatUnits(fee, 18)).toFixed(5)}
               {chain.nativeCurrency.symbol}
             </Chip>
           ) : (
@@ -346,6 +436,49 @@ export default function CardSwap() {
         </Button>
       </CardBody>
       <Divider />
+      {errorTx.status == true ? (
+        <CardFooter>
+          <Image
+            alt="nextui logo"
+            height={20}
+            radius="sm"
+            src="/icon/info.svg"
+            width={20}
+          />
+          <span className="mr-2"></span>
+          <div className="flex flex-col">
+            <pre className="text-red-600">{errorTx.text} </pre>
+          </div>
+        </CardFooter>
+      ) : (
+        ""
+      )}
+
+      {successTx.status == true ? (
+        <CardFooter>
+          <Image
+            alt="nextui logo"
+            height={20}
+            radius="sm"
+            src="/icon/info.svg"
+            width={20}
+          />
+          <span className="mr-2"></span>
+          <div className="flex flex-col">
+            <pre className="text-green-600">
+              {successTx.text}
+              <a
+                href={`https://layerzeroscan.com/tx/${successTx.hash}`}
+                target="_blank"
+              >
+                Check Explorer
+              </a>
+            </pre>
+          </div>
+        </CardFooter>
+      ) : (
+        ""
+      )}
       <CardFooter>
         <Image
           alt="nextui logo"
@@ -374,7 +507,9 @@ export default function CardSwap() {
               <Card>
                 <CardBody>
                   Pastikan OFT tersedia di chain tujuan dan mohon test bridge
-                  dengan nominal kecil dahulu
+                  dengan nominal kecil dahulu.
+                  <br />
+                  Jika Error Tambahkan Extra Gas Fee / Pilih Chain Lain
                 </CardBody>
               </Card>
             </Tab>
